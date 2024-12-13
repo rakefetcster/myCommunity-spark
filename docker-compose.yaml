@@ -1,0 +1,178 @@
+version: '3.2'
+services:
+
+    minio:
+        container_name: minio
+        image: minio/minio:RELEASE.2022-11-08T05-27-07Z
+        command: server /data --console-address ":9001"
+        ports:
+            - "9001:9000"
+            - "9002:9001"
+
+    zookeeper:
+        container_name: zookeeper
+        image: wurstmeister/zookeeper:latest
+        ports:
+            - "2181:2181"
+
+    course-kafka:
+        container_name: course-kafka
+        image: wurstmeister/kafka:2.13-2.8.1
+        environment:
+            KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+            KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://192.168.1.147:9092  
+            KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092  
+        ports:
+            - "9092:9092"  
+        depends_on:
+            - zookeeper
+
+    kafdrop:
+        container_name: kafdrop
+        image: obsidiandynamics/kafdrop:3.30.0
+        ports:
+            - "9003:9000"  # Expose Kafdrop on port 9003 for web UI
+        environment:
+            - KAFKA_BROKERCONNECT=192.168.1.147:9092  
+        depends_on:
+            - course-kafka
+            
+    mariadb:
+        container_name: mariadb
+        image: mariadb:10.6
+        ports:
+            - 3306:3306
+        environment:
+            MYSQL_ROOT_PASSWORD: admin
+            MYSQL_USER: admin
+            MYSQL_PASSWORD: admin
+            MYSQL_DATABASE: metastore_db
+    
+    hive-metastore:
+        container_name: hive_metastore
+        image: ofrir119/hive-metastore:1.0
+        ports:
+            - 9083:9083
+        depends_on:
+            - mariadb
+        
+    dev_env:
+        container_name: dev_env
+        image: ofrir119/developer_env:spark340_ssh
+        ports:
+            - "22022:22"
+            - "8888:8888"
+            - "4040:4040"
+            - "4041:4041"
+            - "4042:4042"
+
+    mongo:
+        image: nayacollege/mongo:1.0
+        container_name: mongo
+        ports:  
+            - "27017:27017"
+        volumes:
+            - ./mongod.conf:/etc/mongo/mongod.conf
+        command: ["mongod", "--config", "/etc/mongo/mongod.conf"]
+            
+    nifi:
+        image: nayacollege/nifi:1.0
+        container_name: nifi
+        ports:
+            - "8080:8080"
+            
+    elasticsearch:
+        container_name: elasticsearch
+        image: docker.elastic.co/elasticsearch/elasticsearch:7.13.2
+        ports:
+            - "9200:9200"
+        environment:
+            discovery.type: single-node
+            
+    kibana:
+        container_name: kibana
+        image: docker.elastic.co/kibana/kibana:7.13.2
+        ports:
+            - "5601:5601"
+        depends_on:
+            - elasticsearch
+            
+    postgres:
+        container_name: postgres
+        image: postgres:12
+        environment:
+            - POSTGRES_USER=postgres
+            - POSTGRES_PASSWORD=postgres
+            - POSTGRES_DB=airflow
+            - POSTGRES_PORT=5432
+        ports:
+            - "5432:5432"
+
+    airflow-init:
+        image: apache/airflow:2.0.0
+        environment:
+            - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+            - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
+            - AIRFLOW__CORE__FERNET_KEY=FB0o_zt4e3Ziq3LdUUO7F2Z95cvFFx16hU8jTeR1ASM=
+            - AIRFLOW__CORE__LOAD_EXAMPLES=False
+            - AIRFLOW__CORE__LOGGING_LEVEL=INFO
+        volumes:
+            - ./dags:/opt/airflow/dags
+            - ./airflow-data/logs:/opt/airflow/logs
+            - ./airflow-data/plugins:/opt/airflow/plugins
+            - ./airflow-data/airflow.cfg:/opt/airlfow/airflow.cfg
+        depends_on:
+            - postgres
+        container_name: airflow_init
+        entrypoint: /bin/bash
+        command:
+            - -c
+            - airflow users list || ( airflow db init &&
+                airflow users create
+                --role Admin
+                --username airflow
+                --password airflow
+                --email airflow@airflow.com
+                --firstname airflow
+                --lastname airflow )
+        restart: on-failure
+
+    airflow-webserver:
+        image: apache/airflow:2.0.0
+        environment:
+            - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+            - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
+            - AIRFLOW__CORE__FERNET_KEY=FB0o_zt4e3Ziq3LdUUO7F2Z95cvFFx16hU8jTeR1ASM=
+            - AIRFLOW__CORE__LOAD_EXAMPLES=False
+            - AIRFLOW__CORE__LOGGING_LEVEL=INFO
+        volumes:
+            - ./dags:/opt/airflow/dags
+            - ./airflow-data/logs:/opt/airflow/logs
+            - ./airflow-data/plugins:/opt/airflow/plugins
+            - ./airflow-data/airflow.cfg:/opt/airlfow/airflow.cfg
+        depends_on:
+            - postgres
+        command: airflow webserver
+        ports:
+            - 8082:8080
+        container_name: airflow_webserver
+        restart: always
+
+    airflow-scheduler:
+        image: apache/airflow:2.0.0
+        environment:
+            - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+            - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
+            - AIRFLOW__CORE__FERNET_KEY=FB0o_zt4e3Ziq3LdUUO7F2Z95cvFFx16hU8jTeR1ASM=
+            - AIRFLOW__CORE__LOAD_EXAMPLES=False
+            - AIRFLOW__CORE__LOGGING_LEVEL=INFO
+        volumes:
+            - ./dags:/opt/airflow/dags
+            - ./airflow-data/logs:/opt/airflow/logs
+            - ./airflow-data/plugins:/opt/airflow/plugins
+            - ./airflow-data/airflow.cfg:/opt/airlfow/airflow.cfg
+        depends_on:
+            - postgres
+        command: airflow scheduler
+        container_name: airflow_scheduler
+        restart: always
